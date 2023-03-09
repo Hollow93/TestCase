@@ -1,81 +1,81 @@
 <?php
 
+declare(strict_types=1);
+
 // Подключение к базе данных
-function connectToDatabase(): PDO
-{
-    static $pdo = null;
-    if ($pdo === null) {
-        $options = [
-            PDO::ATTR_EMULATE_PREPARES   => false,
-            PDO::ATTR_ERRMODE            => PDO::ERRMODE_EXCEPTION,
-            PDO::ATTR_DEFAULT_FETCH_MODE => PDO::FETCH_ASSOC,
-        ];
-        $dsn     = 'mysql:host=localhost;dbname=database_name;charset=utf8mb4';
-        $pdo     = new PDO($dsn, 'username', 'password', $options);
-    }
+$pdo = new PDO('mysql:host=localhost;dbname=test;charset=utf8mb4', 'hollow', '', [
+    PDO::ATTR_EMULATE_PREPARES   => false,
+    PDO::ATTR_ERRMODE            => PDO::ERRMODE_EXCEPTION,
+    PDO::ATTR_DEFAULT_FETCH_MODE => PDO::FETCH_ASSOC,
+]);
 
-    return $pdo;
-}
-
-// Получение всех людей из БД
-function getPeople()
+function getPeople(PDO $dbh): array
 {
-    $dbh  = connectToDatabase();
     $stmt = $dbh->query('SELECT id, number FROM people');
-    return $stmt->fetchAll(PDO::FETCH_ASSOC);
+    return $stmt->fetchAll();
 }
 
-// Получение списка уже отправленных рассылок
-function getSentPeople()
+function getSentPeople(PDO $dbh, int $idMailing): array
 {
-    $dbh    = connectToDatabase();
-    $stmt   = $dbh->query('SELECT person_id FROM mail_sent');
-    $result = $stmt->fetchAll(PDO::FETCH_ASSOC);
-    return $result ? array_column($result, 'person_id') : [];
+    $stmt = $dbh->prepare('SELECT person_id FROM mail_sent WHERE id_mailing = ?');
+    $stmt->execute([$idMailing]);
+    return $stmt->fetchAll(PDO::FETCH_COLUMN);
 }
 
-// Добавление записи в список отправленных рассылок
-function addSentPerson($person_id, $idMailing)
+function addSentPerson(PDO $dbh, int $personId, int $idMailing): void
 {
-    $dbh  = connectToDatabase();
-    $stmt = $dbh->prepare('INSERT INTO mail_sent ($person_id, $id_mailing) VALUES (?, ?)');
-    $stmt->bindParam(1, $person_id);
-    $stmt->bindParam(2, $idMailing);
-    $stmt->execute();
+    $stmt = $dbh->prepare('INSERT INTO mail_sent (person_id, id_mailing) VALUES (?, ?)');
+    $stmt->execute([$personId, $idMailing]);
 }
 
-// Отправка Message
-function sendMessage($number, $subject, $message)
+function getSentMessage(PDO $dbh, int $idMailing): array
 {
-    // Фиктивный метод отправки Message
+    $stmt = $dbh->prepare('SELECT topic, message FROM mailing_list WHERE id_mailing = ?');
+    $stmt->execute([$idMailing]);
+    return $stmt->fetch();
 }
 
-// Получение всех людей, которых еще не было в списке отправленных, и добавление их в очередь рассылки
-function addPeopleToQueue($idMailing)
+function sendMessage(string $number, array $messageBody): void
 {
-    $people      = getPeople();
-    $sentPeople  = getSentPeople($idMailing);
-    foreach ($people as $person) {
-        if (!in_array($person['id'], $sentPeople)) {
-            // Добавление в очередь рассылки
-            sendMessage($person['number'], 'Название рассылки', 'Текст рассылки');
-            // Запись в список отправленных
-            addSentPerson($person['id'], $idMailing);
+// Реализация метода отправки сообщения
+}
+
+/**
+ * @throws Exception
+ */
+function addPeopleToQueue(PDO $dbh, int $idMailing): void
+{
+    try {
+        $people      = getPeople($dbh);
+        $messageBody = getSentMessage($dbh, $idMailing);
+        $sentPeople  = getSentPeople($dbh, $idMailing);
+        $newPeople   = array_diff(array_column($people, 'id'), $sentPeople);
+        foreach ($newPeople as $personId) {
+            sendMessage($people[$personId]['number'], $messageBody);
+            addSentPerson($dbh, $personId, $idMailing);
         }
+        if (empty($newPeople)) {
+            throw new Exception('No new people to add to queue');
+        }
+    } catch (Exception $e) {
+        error_log('Error adding people to queue for mailing ID '.$idMailing.': '.$e->getMessage(), 3);
+        throw new Exception('Error adding people to queue: '.$e->getMessage());
     }
 }
 
-// Определение маршрута API для отправки писем
+// Определение маршрута API для отправки сообщений
 if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_POST['id_mailing'])) {
     $idMailing = (int)$_POST['id_mailing'];
     try {
-        addPeopleToQueue($idMailing);
+        addPeopleToQueue($pdo, $idMailing);
         echo 'Message sent successfully';
     } catch (Exception $e) {
-        header('HTTP/1.1 500 Internal Server Error');
+        error_log('Error sending message for mailing ID '.$idMailing.': '.$e->getMessage(), 3);
+        http_response_code(500);
         echo $e->getMessage();
     }
 } else {
-    header('HTTP/1.1 400 Bad Request');
+    error_log('Invalid request', 3);
+    http_response_code(400);
     echo 'Invalid request';
 }
